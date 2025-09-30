@@ -718,6 +718,7 @@ MonoBehaviour:
   requestedWidth: 1920
   requestedHeight: 1080
   requestedFPS: 30
+  modelPath: yolo11n_float32.tflite
 --- !u!4 &1964602099
 Transform:
   m_ObjectHideFlags: 0

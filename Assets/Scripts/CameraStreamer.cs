@@ -1,22 +1,55 @@
 using UnityEngine;
 using UnityEngine.UI;
+using System.Collections;
 
 public class CameraStreamer : MonoBehaviour
 {
-    [Header("UI Components")]
-    public RawImage cameraDisplay;
-    
-    [Header("Camera Settings")]
-    public int requestedWidth = 1920;
-    public int requestedHeight = 1080;
-    public int requestedFPS = 30;
-    
-    private WebCamTexture webCamTexture;
-    private bool isCameraInitialized = false;
+        [Header("UI Components")]
+        public RawImage cameraDisplay;
+
+        [Header("Camera Settings")]
+        public int requestedWidth = 1920;
+        public int requestedHeight = 1080;
+        public int requestedFPS = 30;
+
+        [Header("Detection Model")]
+        public string modelPath; // Set this in Inspector or code
+        private bool detectorReady = false;
+
+        private WebCamTexture webCamTexture;
+        private Texture2D tex;
+        private bool isCameraInitialized = false;
 
     void Start()
     {
         StartCoroutine(RequestAndStartCamera());
+        StartCoroutine(CopyModelAndInitDetector());
+    }
+
+    IEnumerator CopyModelAndInitDetector()
+    {
+        string srcPath = System.IO.Path.Combine(Application.streamingAssetsPath, modelPath);
+        string dstPath = System.IO.Path.Combine(Application.persistentDataPath, modelPath);
+
+        Debug.Log($"[CameraStreamer] Copying model from {srcPath} to {dstPath}");
+
+        #if UNITY_ANDROID && !UNITY_EDITOR
+        UnityEngine.Networking.UnityWebRequest www = UnityEngine.Networking.UnityWebRequest.Get(srcPath);
+        yield return www.SendWebRequest();
+        if (www.result != UnityEngine.Networking.UnityWebRequest.Result.Success)
+        {
+            Debug.LogError("[CameraStreamer] Failed to load model from StreamingAssets: " + www.error);
+            yield break;
+        }
+        System.IO.File.WriteAllBytes(dstPath, www.downloadHandler.data);
+        #else
+        System.IO.File.Copy(srcPath, dstPath, true);
+        #endif
+
+        Debug.Log("[CameraStreamer] Model copied to: " + dstPath);
+        detectorReady = NativeDetectPlugin.InitializeDetector(dstPath);
+        Debug.Log("[CameraStreamer] Detector initialized: " + detectorReady);
+        yield break;
     }
 
     System.Collections.IEnumerator RequestAndStartCamera()
@@ -115,6 +148,33 @@ public class CameraStreamer : MonoBehaviour
         {
             AdjustCameraOrientation();
             AdjustRawImageSize();
+
+            // --- Object Detection Integration ---
+            if (detectorReady && webCamTexture.didUpdateThisFrame)
+            {
+                // Create Texture2D if needed
+                if (tex == null || tex.width != webCamTexture.width || tex.height != webCamTexture.height)
+                    tex = new Texture2D(webCamTexture.width, webCamTexture.height, TextureFormat.RGB24, false);
+
+                tex.SetPixels(webCamTexture.GetPixels());
+                tex.Apply();
+                byte[] imageBytes = tex.GetRawTextureData();
+
+                // Call detection plugin
+                Debug.Log($"[CameraStreamer] Calling DetectObjects on frame {tex.width}x{tex.height}, bytes: {imageBytes.Length}");
+                int detectedCount = NativeDetectPlugin.DetectObjects(imageBytes, tex.width, tex.height);
+                Debug.Log($"[CameraStreamer] DetectObjects result: {detectedCount}");
+                byte[] resultImage = NativeDetectPlugin.GetImageWithBoundingBoxes(imageBytes, tex.width, tex.height);
+                Debug.Log($"[CameraStreamer] GetImageWithBoundingBoxes result: {(resultImage != null ? resultImage.Length.ToString() : "null")}");
+
+                // Update display with bounding boxes
+                if (resultImage != null && resultImage.Length == imageBytes.Length)
+                {
+                    tex.LoadRawTextureData(resultImage);
+                    tex.Apply();
+                    cameraDisplay.texture = tex;
+                }
+            }
         }
     }
 
